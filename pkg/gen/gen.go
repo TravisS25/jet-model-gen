@@ -19,12 +19,16 @@ import (
 	postgres2 "github.com/go-jet/jet/v2/postgres"
 	"github.com/pkg/errors"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/kenshaw/snaker"
 )
 
 const (
-	PACKAGE_NAME        = "jet-model-gen"
-	DB_PASSWORD_ENV_VAR = "DB_MODEL_GEN_DB_PASSWORD"
+	PACKAGE_NAME         = "jet-model-gen"
+	JET_PASSWORD_ENV_VAR = "JET_MODEL_GEN_DB_PASSWORD"
 )
 
 type foreignKey struct {
@@ -36,10 +40,12 @@ type GoModelParams struct {
 	Driver           DBDriver
 	GoDir            string
 	Schema           string
-	ConvertTimestamp string
-	ConvertDate      string
-	ConvertBigint    string
-	ConvertUUID      string
+	NewTimestampName string
+	NewBigintName    string
+	NewUUIDName      string
+	NewTimestampPath string
+	NewBigintPath    string
+	NewUUIDPath      string
 }
 
 func GenerateGoModels(db *sql.DB, params GoModelParams) error {
@@ -93,10 +99,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 		}
 
 		cols := make([]metadata.Column, 0, len(table.Columns)+len(fks))
-
-		for _, v := range table.Columns {
-			cols = append(cols, v)
-		}
+		cols = append(cols, table.Columns...)
 
 		for _, v := range fks {
 			cols = append(cols, metadata.Column{
@@ -115,11 +118,6 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	}
 
 	schemaMetadata.TablesMetaData = newTableMetaList
-	convertTypes := []string{
-		"uuid",
-		"bigint",
-		"timestamp",
-	}
 
 	tmpl := template.Default(postgres2.Dialect).
 		UseSchema(func(schema metadata.Schema) template.Schema {
@@ -141,6 +139,27 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 									})
 								}
 
+								if params.NewBigintName != "" && strings.Contains(col.DataType.Name, "bigint") {
+									field = field.UseType(template.Type{
+										Name:       params.NewBigintName,
+										ImportPath: params.NewBigintPath,
+									})
+								}
+
+								if params.NewTimestampName != "" && strings.Contains(col.DataType.Name, "timestamp") {
+									field = field.UseType(template.Type{
+										Name:       params.NewTimestampName,
+										ImportPath: params.NewTimestampPath,
+									})
+								}
+
+								if params.NewUUIDName != "" && strings.Contains(col.DataType.Name, "uuid") {
+									field = field.UseType(template.Type{
+										Name:       params.NewUUIDName,
+										ImportPath: params.NewUUIDPath,
+									})
+								}
+
 								field = field.UseTags(tags...)
 								return field
 							})
@@ -157,12 +176,14 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	return nil
 }
 
-func GenerateTsModels(goDir, tsDir, tsFile string) error {
+func GenerateTsModels(modelDir, tsDir, tsFile string) error {
 	strConv := []string{
 		"Int64",
 		"int64",
 		"float64",
 		"string",
+		"uuid",
+		"time",
 	}
 
 	numConv := []string{
@@ -190,7 +211,7 @@ func GenerateTsModels(goDir, tsDir, tsFile string) error {
 
 	fmt.Printf("Generating ts files....\n")
 
-	return filepath.Walk(goDir, func(path string, info fs.FileInfo, err error) error {
+	return filepath.Walk(modelDir, func(path string, info fs.FileInfo, err error) error {
 		if !info.IsDir() {
 			if !strings.HasSuffix(info.Name(), ".go") {
 				return nil
@@ -287,61 +308,6 @@ func GenerateTsModels(goDir, tsDir, tsFile string) error {
 	})
 }
 
-func RemoveGenDirs(queryOutPath, modelOutPath string) error {
-	var err error
-
-	if queryOutPath == "" {
-		queryOutPath = "./query"
-	}
-	if modelOutPath == "" {
-		modelOutPath = "./model"
-	}
-
-	if err = os.RemoveAll(queryOutPath); err != nil {
-		return errors.WithStack(err)
-	}
-	if err = os.RemoveAll(modelOutPath); err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
-}
-
-func getTableNamesQuery(driver DBDriver, schema string) string {
-	switch driver {
-	case PostgresDriver:
-		return fmt.Sprintf(
-			`
-			select
-				table_name
-			from
-				information_schema.tables
-			where
-				table_schema = '%s'
-			`,
-			schema,
-		)
-	case MysqlDriver:
-		return `
-		select
-			table_name
-		from
-			information_schema.tables
-		`
-	default:
-		return `
-		select
-    		name
-		from
-			sqlite_schema
-		where
-			type ='table'
-		and
-			name NOT LIKE 'sqlite_%';
-		`
-	}
-}
-
 func getForeignKeyQuery(driver DBDriver, schema, tableName string) string {
 	switch driver {
 	case PostgresDriver:
@@ -391,51 +357,6 @@ func getForeignKeyQuery(driver DBDriver, schema, tableName string) string {
 				"table" as "foreign_table_name"
 			from
 				pragma_foreign_key_list('%s');
-			`,
-			tableName,
-		)
-	}
-}
-
-func getColumnNameQuery(driver DBDriver, schema, tableName string) string {
-	switch driver {
-	case PostgresDriver:
-		return fmt.Sprintf(
-			`
-			select
-				column_name,
-				data_type
-			from
-				information_schema.columns
-			where
-				table_schema = '%s'
-			and
-				table_name   = '%s';
-			`,
-			schema,
-			tableName,
-		)
-	case MysqlDriver:
-		return fmt.Sprintf(
-			`
-			select
-				column_name,
-				data_type
-			from
-				information_schema.columns
-			where
-				table_name = '%s';
-			`,
-			tableName,
-		)
-	default:
-		return fmt.Sprintf(
-			`
-			select
-				name,
-				data_type
-			from
-				pragma_table_info('%s');
 			`,
 			tableName,
 		)

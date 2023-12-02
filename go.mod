@@ -3,9 +3,11 @@ module github.com/TravisS25/jet-model-gen
 go 1.19
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/go-jet/jet/v2 v2.10.1
+	github.com/go-sql-driver/mysql v1.7.0
 	github.com/kenshaw/snaker v0.2.0
+	github.com/lib/pq v1.10.8
+	github.com/mattn/go-sqlite3 v1.14.16
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v1.8.0

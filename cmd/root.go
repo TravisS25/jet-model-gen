@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/TravisS25/jet-model-gen/pkg/gen"
 	"github.com/pkg/errors"
@@ -29,12 +30,11 @@ import (
 	"github.com/spf13/viper"
 )
 
-const (
-	baseDSN = "%s://%s:%s@%s:%d/%s?sslmode=%s&sslrootcert=%s&sslkey=%s&sslcert=%s"
-)
-
 var rootFlagParams = rootFlagNames{
 	// Database fields
+	DbSchema: flagName{
+		LongHand: "db-schema",
+	},
 	DbDriver: flagName{
 		LongHand: "db-driver",
 	},
@@ -50,25 +50,40 @@ var rootFlagParams = rootFlagNames{
 	DbPassword: flagName{
 		LongHand: "db-password",
 	},
-	DbSchema: flagName{
-		LongHand: "db-schema",
+	DbName: flagName{
+		LongHand: "db-name",
+	},
+	DbSslMode: flagName{
+		LongHand: "db-ssl-mode",
+	},
+	DbSslKey: flagName{
+		LongHand: "db-ssl-key",
+	},
+	DbSslCrt: flagName{
+		LongHand: "db-ssl-crt",
+	},
+	DbSslRootCrt: flagName{
+		LongHand: "db-ssl-root-crt",
 	},
 
 	// Data type fields
-	ConvertTimestamp: flagName{
-		LongHand: "convert-timestamp",
+	NewTimestampName: flagName{
+		LongHand: "new-timestamp-name",
 	},
-	ConvertDate: flagName{
-		LongHand: "convert-date",
+	NewBigintName: flagName{
+		LongHand: "new-bigint-name",
 	},
-	ConvertBigint: flagName{
-		LongHand: "convert-bigint",
+	NewUUIDName: flagName{
+		LongHand: "new-uuid-name",
 	},
-	ConvertUUID: flagName{
-		LongHand: "convert-uuid",
+	NewTimestampPath: flagName{
+		LongHand: "new-timestamp-path",
 	},
-	LanguageType: flagName{
-		LongHand: "language-type",
+	NewBigintPath: flagName{
+		LongHand: "new-bigint-path",
+	},
+	NewUUIDPath: flagName{
+		LongHand: "new-uuid-path",
 	},
 
 	// Directory/file fields
@@ -81,17 +96,15 @@ var rootFlagParams = rootFlagNames{
 	TsFile: flagName{
 		LongHand: "ts-file",
 	},
-}
-
-var languageTypeMap = map[gen.LanguageType]struct{}{
-	gen.GoLanguageType: struct{}{},
-	gen.TsLanguageType: struct{}{},
+	RemoveGenDir: flagName{
+		LongHand: "remove-gen-dir",
+	},
 }
 
 var dbDriverMap = map[gen.DBDriver]struct{}{
-	gen.PostgresDriver: struct{}{},
-	gen.MysqlDriver:    struct{}{},
-	gen.SqliteDriver:   struct{}{},
+	gen.PostgresDriver: {},
+	gen.MysqlDriver:    {},
+	gen.SqliteDriver:   {},
 }
 
 type rootParms struct {
@@ -123,16 +136,19 @@ type rootFlagNames struct {
 	DbSslCrt     flagName
 
 	// Directory/file fields
-	GoDir  flagName
-	TsDir  flagName
-	TsFile flagName
+	GoDir        flagName
+	TsDir        flagName
+	TsFile       flagName
+	RemoveGenDir flagName
 
 	// Data type fields
-	ConvertTimestamp flagName
-	ConvertDate      flagName
-	ConvertBigint    flagName
-	ConvertUUID      flagName
-	LanguageType     flagName
+	NewTimestampName flagName
+	NewBigintName    flagName
+	NewUUIDName      flagName
+
+	NewTimestampPath flagName
+	NewBigintPath    flagName
+	NewUUIDPath      flagName
 }
 
 var cfgFile string
@@ -140,13 +156,11 @@ var cfgFile string
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "jet-model-gen",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "Generates models for different languages based on database",
+	Long: `
+	Generates models based on the connecting database for a variety of different
+	languages using the jet golang library
+	`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	//	Run: func(cmd *cobra.Command, args []string) { },
@@ -181,9 +195,10 @@ to quickly create a Cobra application.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var err error
 		var dbPort int
+		var removeGenDir bool
 		var dbDriver gen.DBDriver
 		var dbHost, dbUser, dbPassword, dbName, dbSchema, dbSslMode, dbSslRootCrt, dbSslKey, dbSslCrt string
-		var convertTimestamp, convertDate, convertBigint, convertUUID string
+		var newTimestampName, newTimestampPath, newBigintName, newBigintPath, newUUIDName, newUUIDPath string
 		var goDir, tsDir, tsFile string
 
 		if err = viper.ReadInConfig(); err == nil {
@@ -203,15 +218,18 @@ to quickly create a Cobra application.`,
 			dbSslCrt = rootCmd.Get("db_ssl_cert").Str()
 
 			// Directory/file fields
-			goDir = rootCmd.Get("go_output_dir").Str()
-			tsDir = rootCmd.Get("ts_output_dir").Str()
-			tsFile = rootCmd.Get("ts_output_file").Str()
+			goDir = rootCmd.Get("go_dir").Str()
+			tsDir = rootCmd.Get("ts_dir").Str()
+			tsFile = rootCmd.Get("ts_file").Str()
+			removeGenDir = rootCmd.Get("remove_gen_dir").Bool()
 
 			// Data type fields
-			convertTimestamp = rootCmd.Get("convert_timestamp").Str()
-			convertDate = rootCmd.Get("convert_date").Str()
-			convertBigint = rootCmd.Get("convert_bigint").Str()
-			convertUUID = rootCmd.Get("convert_uuid").Str()
+			newTimestampName = rootCmd.Get("new_timestamp_name").Str()
+			newTimestampPath = rootCmd.Get("new_timestamp_path").Str()
+			newBigintName = rootCmd.Get("new_bigint_name").Str()
+			newBigintPath = rootCmd.Get("new_bigint_path").Str()
+			newUUIDName = rootCmd.Get("new_uuid_name").Str()
+			newUUIDPath = rootCmd.Get("new_uuid_path").Str()
 		}
 
 		dbDriverCmd, _ := cmd.Flags().GetString(rootFlagParams.DbDriver.LongHand)
@@ -225,14 +243,17 @@ to quickly create a Cobra application.`,
 		dbSslRootCrtCmd, _ := cmd.Flags().GetString(rootFlagParams.DbSslRootCrt.LongHand)
 		dbSslKeyCmd, _ := cmd.Flags().GetString(rootFlagParams.DbSslKey.LongHand)
 
-		convertTimestampCmd, _ := cmd.Flags().GetString(rootFlagParams.ConvertTimestamp.LongHand)
-		convertDateCmd, _ := cmd.Flags().GetString(rootFlagParams.ConvertDate.LongHand)
-		convertBigintCmd, _ := cmd.Flags().GetString(rootFlagParams.ConvertBigint.LongHand)
-		convertUUIDCmd, _ := cmd.Flags().GetString(rootFlagParams.ConvertUUID.LongHand)
+		newTimestampNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewTimestampName.LongHand)
+		newBigintNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewBigintName.LongHand)
+		newUUIDNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDName.LongHand)
+		newTimestampPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewTimestampPath.LongHand)
+		newBigintPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewBigintPath.LongHand)
+		newUUIDPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDPath.LongHand)
 
 		goDirCmd, _ := cmd.Flags().GetString(rootFlagParams.GoDir.LongHand)
 		tsDirCmd, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
 		tsFileCmd, _ := cmd.Flags().GetString(rootFlagParams.TsFile.LongHand)
+		removeGenDirCmd, _ := cmd.Flags().GetBool(rootFlagParams.RemoveGenDir.LongHand)
 
 		if dbDriverCmd != "" {
 			dbDriver = gen.DBDriver(dbDriverCmd)
@@ -262,20 +283,26 @@ to quickly create a Cobra application.`,
 			dbSslRootCrt = dbSslRootCrtCmd
 		}
 		if dbSslKeyCmd != "" {
-			dbSslKeyCmd = dbSslKeyCmd
+			dbSslKey = dbSslKeyCmd
 		}
 
-		if convertTimestampCmd != "" {
-			convertTimestamp = convertTimestampCmd
+		if newTimestampNameCmd != "" {
+			newTimestampName = newTimestampNameCmd
 		}
-		if convertDateCmd != "" {
-			convertDate = convertDateCmd
+		if newTimestampPathCmd != "" {
+			newTimestampPath = newTimestampPathCmd
 		}
-		if convertBigintCmd != "" {
-			convertBigint = convertBigintCmd
+		if newBigintNameCmd != "" {
+			newBigintName = newBigintNameCmd
 		}
-		if convertUUIDCmd != "" {
-			convertUUID = convertUUIDCmd
+		if newBigintPathCmd != "" {
+			newBigintName = newBigintPathCmd
+		}
+		if newUUIDNameCmd != "" {
+			newUUIDName = newUUIDNameCmd
+		}
+		if newUUIDPathCmd != "" {
+			newUUIDName = newUUIDPathCmd
 		}
 
 		if goDirCmd != "" {
@@ -287,9 +314,12 @@ to quickly create a Cobra application.`,
 		if tsFileCmd != "" {
 			tsFile = tsFileCmd
 		}
+		if removeGenDirCmd {
+			removeGenDir = true
+		}
 
 		dbURL := fmt.Sprintf(
-			baseDSN,
+			"%s://%s:%s@%s:%d/%s?sslmode=%s&sslrootcert=%s&sslkey=%s&sslcert=%s",
 			dbDriver,
 			dbUser,
 			dbPassword,
@@ -310,15 +340,30 @@ to quickly create a Cobra application.`,
 		if err = gen.GenerateGoModels(
 			db,
 			gen.GoModelParams{
-				Driver: dbDriver,
-				GoDir: ,
+				Schema:           dbSchema,
+				Driver:           dbDriver,
+				GoDir:            goDir,
+				NewTimestampName: newTimestampName,
+				NewTimestampPath: newTimestampPath,
+				NewBigintName:    newBigintName,
+				NewBigintPath:    newBigintPath,
+				NewUUIDName:      newUUIDName,
+				NewUUIDPath:      newUUIDPath,
 			},
 		); err != nil {
 			return errors.WithStack(err)
 		}
 
 		if tsDir != "" && tsFile != "" {
-			if err = gen.GenerateTsModels(goDir, tsDir, tsFile); err != nil {
+			if err = gen.GenerateTsModels(filepath.Join(goDir, dbSchema, "model"), tsDir, tsFile); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+
+		homeDir, _ := homedir.Dir()
+
+		if removeGenDir && goDir != homeDir {
+			if err = os.RemoveAll(goDir); err != nil {
 				return errors.WithStack(err)
 			}
 		}
@@ -333,14 +378,10 @@ func rootCmdPreRunValidation(params rootParms) error {
 	var rootCmdMap map[string]interface{}
 
 	if err = viper.ReadInConfig(); err == nil {
-		rootCmdFromFile := viper.Get("root_cmd")
+		rootCmdMap = viper.GetStringMap("root_cmd")
 
-		if rootCmdFromFile == nil {
-			return errors.WithStack(fmt.Errorf(gen.PACKAGE_NAME + ": root_cmd key in config file must be set"))
-		}
-
-		if rootCmdMap, ok = rootCmdFromFile.(map[string]interface{}); !ok {
-			return errors.WithStack(fmt.Errorf(gen.PACKAGE_NAME + ": root_cmd key must be dictionary type"))
+		if len(rootCmdMap) == 0 {
+			return errors.WithStack(fmt.Errorf(gen.PACKAGE_NAME + ": 'root_cmd' key in config file must be set"))
 		}
 	} else {
 		rootCmdMap = make(map[string]interface{})
@@ -351,7 +392,6 @@ func rootCmdPreRunValidation(params rootParms) error {
 	dbDriver := gen.DBDriver(rootObjx.Get("db_driver").Str())
 	dbSchema := rootObjx.Get("db_schema").Str()
 	dbUser := rootObjx.Get("db_user").Str()
-	dbPassword := rootObjx.Get("db_password").Str()
 	dbHost := rootObjx.Get("db_host").Str()
 	dbPort := rootObjx.Get("db_port").Int()
 	dbName := rootObjx.Get("db_name").Str()
@@ -369,9 +409,6 @@ func rootCmdPreRunValidation(params rootParms) error {
 	if params.DbUser != "" {
 		dbUser = params.DbUser
 	}
-	if params.DbPassword != "" {
-		dbPassword = params.DbPassword
-	}
 	if params.DbHost != "" {
 		dbHost = params.DbHost
 	}
@@ -384,7 +421,7 @@ func rootCmdPreRunValidation(params rootParms) error {
 
 	if dbDriver == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-driver flag required if config file is not used"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": --db-driver flag required if config file is not used"),
 		)
 	}
 
@@ -395,37 +432,34 @@ func rootCmdPreRunValidation(params rootParms) error {
 	}
 
 	if dbDriver == gen.PostgresDriver && dbSchema == "" {
-		return errors.WithStack(fmt.Errorf(gen.PACKAGE_NAME + ": --schema flag must be set when --db-driver is set to 'postgres'"))
+		return errors.WithStack(
+			fmt.Errorf(gen.PACKAGE_NAME + ": --schema flag must be set when --db-driver is set to 'postgres'"),
+		)
 	}
 	if dbUser == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-user flag required if config file is not used"),
-		)
-	}
-	if dbPassword == "" {
-		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-password flag required if config file is not used"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": --db-user flag required if config file is not used"),
 		)
 	}
 	if dbHost == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-host flag required if config file is not used"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": --db-host flag required if config file is not used"),
 		)
 	}
 	if dbPort == 0 {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-port flag required if config file is not used"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": --db-port flag required if config file is not used"),
 		)
 	}
 	if dbName == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": --db-name flag required if config file is not used"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": --db-name flag required if config file is not used"),
 		)
 	}
 
 	if goDir == "" && tsDir == "" && tsFile == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME, ": must pass --go-dir or --ts-dir and --ts-file"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": must pass --go-dir or --ts-dir and --ts-file"),
 		)
 	}
 
@@ -453,6 +487,11 @@ func init() {
 	// will be global for your application.
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.model_gen.yaml)")
+
+	////////////////////////////////
+	// DATABASE FLAGS
+	////////////////////////////////
+
 	rootCmd.PersistentFlags().String(
 		rootFlagParams.DbDriver.LongHand,
 		"",
@@ -471,7 +510,7 @@ func init() {
 	rootCmd.PersistentFlags().String(
 		rootFlagParams.DbPassword.LongHand,
 		"",
-		`Password for database user.  Can be set with '`+gen.DB_PASSWORD_ENV_VAR+`' env var`,
+		`Password for database user.  Can be set with '`+gen.JET_PASSWORD_ENV_VAR+`' env var`,
 	)
 	rootCmd.PersistentFlags().String(
 		rootFlagParams.DbHost.LongHand,
@@ -493,6 +532,81 @@ func init() {
 		"disable",
 		"SSL mode of connection to database",
 	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.DbSslKey.LongHand,
+		"",
+		"Private key if using ssl",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.DbSslCrt.LongHand,
+		"",
+		"Public cert if using ssl",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.DbSslRootCrt.LongHand,
+		"",
+		"Root cert if using ssl",
+	)
+
+	////////////////////////////////
+	// DATA TYPE FLAGS
+	////////////////////////////////
+
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewTimestampName.LongHand,
+		"",
+		"Determines what timestamp type to convert to",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewTimestampPath.LongHand,
+		"",
+		"Determines the new timestamp import path",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewBigintName.LongHand,
+		"",
+		"Determines what bigint type to convert to",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewBigintPath.LongHand,
+		"",
+		"Determines the new bigint import path",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewUUIDName.LongHand,
+		"",
+		"Determines what uuid type to convert to",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.NewUUIDPath.LongHand,
+		"",
+		"Determines the new uuid import path",
+	)
+
+	////////////////////////////////
+	// DIRECTORY/FILE FLAGS
+	////////////////////////////////
+
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.GoDir.LongHand,
+		"",
+		"Determines what directory to store generated go models",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.TsDir.LongHand,
+		"",
+		"Determines what directory to store generated ts models",
+	)
+	rootCmd.PersistentFlags().String(
+		rootFlagParams.TsFile.LongHand,
+		"",
+		"Determines what file to store generated ts models",
+	)
+	rootCmd.PersistentFlags().Bool(
+		rootFlagParams.RemoveGenDir.LongHand,
+		false,
+		"Determines whether to delete the generated go files",
+	)
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -510,7 +624,7 @@ func initConfig() {
 
 		// Search config in home directory with name ".modelgen" (without extension).
 		viper.AddConfigPath(home)
-		viper.SetConfigName(".db_model_gen")
+		viper.SetConfigName(".jet_model_gen")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match
