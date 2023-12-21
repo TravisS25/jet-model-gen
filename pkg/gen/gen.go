@@ -2,9 +2,10 @@ package gen
 
 import (
 	"bufio"
-	"context"
+	"bytes"
 	"database/sql"
 	"fmt"
+	"go/format"
 	"io"
 	"io/fs"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/TravisS25/jet-model-gen/pkg/queryset"
+	"github.com/TravisS25/jet-model-gen/internal/queryset"
 	"github.com/go-jet/jet/v2/generator/metadata"
 	"github.com/go-jet/jet/v2/generator/template"
 	postgres2 "github.com/go-jet/jet/v2/postgres"
@@ -67,21 +68,18 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 		)
 	}
 
-	newTableMetaList := make([]metadata.Table, 0, len(schemaMetadata.TablesMetaData))
+	//newTableMetaList := make([]metadata.Table, 0, len(schemaMetadata.TablesMetaData))
+	tableMap := make(map[string][]foreignKey, len(schemaMetadata.TablesMetaData))
 
 	for _, table := range schemaMetadata.TablesMetaData {
-		rows, err := db.QueryContext(
-			context.Background(),
-			getForeignKeyQuery(params.Driver, params.Schema, table.Name),
-		)
-
+		rows, err := db.Query(getForeignKeyQuery(params.Driver, params.Schema, table.Name))
 		if err != nil {
 			return errors.WithStack(
 				fmt.Errorf(PACKAGE_NAME+": error querying foreign tables: %s", err),
 			)
 		}
 
-		fks := []foreignKey{}
+		fks := make([]foreignKey, 0, 10)
 
 		for rows.Next() {
 			var columnName, foreignTableName string
@@ -93,31 +91,25 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 			}
 
 			fks = append(fks, foreignKey{
-				ColumnName:       columnName,
+				ColumnName:       columnName[:len(columnName)-3],
 				ForeignTableName: foreignTableName,
 			})
 		}
 
-		cols := make([]metadata.Column, 0, len(table.Columns)+len(fks))
-		cols = append(cols, table.Columns...)
-
-		for _, v := range fks {
-			cols = append(cols, metadata.Column{
-				Name: v.ColumnName[:len(v.ColumnName)-3],
-				DataType: metadata.DataType{
-					Name: v.ForeignTableName,
-					Kind: metadata.UserDefinedType,
-				},
-			})
-		}
-
-		newTableMetaList = append(newTableMetaList, metadata.Table{
-			Name:    table.Name,
-			Columns: cols,
-		})
+		tableMap[table.Name] = fks
 	}
 
-	schemaMetadata.TablesMetaData = newTableMetaList
+	getFieldName := func(col metadata.Column, newName string) string {
+		var fieldName string
+
+		if col.IsNullable {
+			fieldName = "*" + newName
+		} else {
+			fieldName = newName
+		}
+
+		return fieldName
+	}
 
 	tmpl := template.Default(postgres2.Dialect).
 		UseSchema(func(schema metadata.Schema) template.Schema {
@@ -127,35 +119,31 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 						return template.DefaultTableModel(table).
 							UseField(func(col metadata.Column) template.TableModelField {
 								field := template.DefaultTableModelField(col)
+
 								tags := []string{
 									`json:"` + snaker.ForceLowerCamelIdentifier(col.Name) + `"`,
 									`db:"` + col.Name + `"`,
-								}
-
-								if col.DataType.Kind == metadata.UserDefinedType {
-									tags = append(tags, `alias:"`+col.Name+`"`)
-									field = field.UseType(template.Type{
-										Name: "*" + snaker.ForceCamelIdentifier(col.DataType.Name),
-									})
+									`mapstructure:"` + col.Name + `"`,
+									`alias:"` + col.Name + `"`,
 								}
 
 								if params.NewBigintName != "" && strings.Contains(col.DataType.Name, "bigint") {
 									field = field.UseType(template.Type{
-										Name:       params.NewBigintName,
+										Name:       getFieldName(col, params.NewBigintName),
 										ImportPath: params.NewBigintPath,
 									})
 								}
 
 								if params.NewTimestampName != "" && strings.Contains(col.DataType.Name, "timestamp") {
 									field = field.UseType(template.Type{
-										Name:       params.NewTimestampName,
+										Name:       getFieldName(col, params.NewTimestampName),
 										ImportPath: params.NewTimestampPath,
 									})
 								}
 
 								if params.NewUUIDName != "" && strings.Contains(col.DataType.Name, "uuid") {
 									field = field.UseType(template.Type{
-										Name:       params.NewUUIDName,
+										Name:       getFieldName(col, params.NewUUIDName),
 										ImportPath: params.NewUUIDPath,
 									})
 								}
@@ -171,6 +159,107 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 	if err = template.ProcessSchema(params.GoDir, schemaMetadata, tmpl); err != nil {
 		return fmt.Errorf("error processing schema: %s", err)
+	}
+
+	fmt.Printf("Updating go files....\n")
+
+	goFileDir := filepath.Join(params.GoDir, params.Schema, "model")
+	if err = filepath.WalkDir(goFileDir, func(path string, entry fs.DirEntry, err error) error {
+		if !entry.IsDir() {
+			if !strings.HasSuffix(entry.Name(), ".go") {
+				return nil
+			}
+
+			origFile, err := os.Open(path)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			// Create a scanner to read lines
+			scanner := bufio.NewScanner(origFile)
+			tableName := strings.Split(entry.Name(), ".")[0]
+
+			fileInfo, err := entry.Info()
+			if err != nil {
+				return err
+			}
+
+			buf := make([]byte, 0, fileInfo.Size()+512)
+			bufWriter := bytes.NewBuffer(buf)
+
+			// Read lines into the buffer
+			for scanner.Scan() {
+				line := scanner.Text()
+
+				if strings.TrimSpace(line) == "}" {
+					fks := tableMap[tableName]
+
+					for _, fk := range fks {
+						_, err = bufWriter.WriteString(
+							snaker.SnakeToCamelIdentifier(fk.ColumnName) + " *" +
+								snaker.SnakeToCamelIdentifier(fk.ForeignTableName) + "`" +
+								fmt.Sprintf(
+									`json:"%s" db:"%s" mapstructure:"%s" alias:"%s:%s"`,
+									snaker.ForceLowerCamelIdentifier(fk.ColumnName),
+									fk.ColumnName,
+									fk.ColumnName,
+									tableName,
+									fk.ColumnName,
+								) + "` \n",
+						)
+						if err != nil {
+							return fmt.Errorf("error trying to write to buffer: %s", err)
+						}
+					}
+				}
+
+				if _, err = bufWriter.WriteString(line + "\n"); err != nil {
+					return fmt.Errorf("error trying to write to buffer: %s", err)
+				}
+			}
+
+			// Check for scanning errors
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("error scanning file: %s", err)
+			}
+
+			// Close the original file
+			origFile.Close()
+
+			formattedFile, err := format.Source(bufWriter.Bytes())
+			if err != nil {
+				return fmt.Errorf("error trying to format file: %s", err)
+			}
+
+			tempFilePath := "jet_model_gen_test.go"
+			tempFile, err := os.Create(tempFilePath)
+			if err != nil {
+				return fmt.Errorf("error creating temporary file: %s", err)
+			}
+
+			defer tempFile.Close()
+
+			if _, err = tempFile.Write(formattedFile); err != nil {
+				return fmt.Errorf("error writing to file: %s", err)
+			}
+
+			// Remove the original file
+			err = os.Remove(path)
+			if err != nil {
+				return fmt.Errorf("error removing original file: %s", err)
+			}
+
+			// Rename the temporary file to the original file name
+			err = os.Rename(tempFilePath, path)
+			if err != nil {
+				return fmt.Errorf("error renaming temporary file: %s", err)
+			}
+
+		}
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	return nil
