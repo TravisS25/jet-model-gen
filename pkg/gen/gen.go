@@ -38,15 +38,16 @@ type foreignKey struct {
 }
 
 type GoModelParams struct {
-	Driver           DBDriver
-	GoDir            string
-	Schema           string
-	NewTimestampName string
-	NewBigintName    string
-	NewUUIDName      string
-	NewTimestampPath string
-	NewBigintPath    string
-	NewUUIDPath      string
+	Driver                 DBDriver
+	GoDir                  string
+	Schema                 string
+	NewTimestampName       string
+	NewBigintName          string
+	NewUUIDName            string
+	NewTimestampPath       string
+	NewBigintPath          string
+	NewUUIDPath            string
+	ExcludedTableFieldTags map[string]struct{}
 }
 
 func GenerateGoModels(db *sql.DB, params GoModelParams) error {
@@ -120,13 +121,6 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 							UseField(func(col metadata.Column) template.TableModelField {
 								field := template.DefaultTableModelField(col)
 
-								tags := []string{
-									`json:"` + snaker.ForceLowerCamelIdentifier(col.Name) + `"`,
-									`db:"` + col.Name + `"`,
-									`mapstructure:"` + col.Name + `"`,
-									`alias:"` + col.Name + `"`,
-								}
-
 								if params.NewBigintName != "" && strings.Contains(col.DataType.Name, "bigint") {
 									field = field.UseType(template.Type{
 										Name:       getFieldName(col, params.NewBigintName),
@@ -146,6 +140,28 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 										Name:       getFieldName(col, params.NewUUIDName),
 										ImportPath: params.NewUUIDPath,
 									})
+								}
+
+								excludeJsonTag := false
+
+								if params.ExcludedTableFieldTags != nil {
+									excludedField := table.Name + "." + col.Name
+
+									if _, ok := params.ExcludedTableFieldTags[excludedField]; ok {
+										excludeJsonTag = true
+									}
+								}
+
+								tags := []string{
+									`db:"` + col.Name + `"`,
+									`mapstructure:"` + col.Name + `"`,
+									`alias:"` + col.Name + `"`,
+								}
+
+								if excludeJsonTag {
+									tags = append(tags, `json:"-"`)
+								} else {
+									tags = append(tags, `json:"`+snaker.ForceLowerCamelIdentifier(col.Name)+`"`)
 								}
 
 								field = field.UseTags(tags...)

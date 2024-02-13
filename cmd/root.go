@@ -85,6 +85,9 @@ var rootFlagParams = rootFlagNames{
 	NewUUIDPath: flagName{
 		LongHand: "new-uuid-path",
 	},
+	ExcludedTableFieldTags: flagName{
+		LongHand: "excluded-table-field-tags",
+	},
 
 	// Directory/file fields
 	GoDir: flagName{
@@ -149,6 +152,8 @@ type rootFlagNames struct {
 	NewTimestampPath flagName
 	NewBigintPath    flagName
 	NewUUIDPath      flagName
+
+	ExcludedTableFieldTags flagName
 }
 
 var cfgFile string
@@ -199,6 +204,8 @@ var rootCmd = &cobra.Command{
 		var dbDriver gen.DBDriver
 		var dbHost, dbUser, dbPassword, dbName, dbSchema, dbSslMode, dbSslRootCrt, dbSslKey, dbSslCrt string
 		var newTimestampName, newTimestampPath, newBigintName, newBigintPath, newUUIDName, newUUIDPath string
+		var excludedTableFieldTagMap map[string]struct{}
+		var excludedTableFieldTags []string
 		var goDir, tsDir, tsFile string
 
 		if err = viper.ReadInConfig(); err == nil {
@@ -222,6 +229,12 @@ var rootCmd = &cobra.Command{
 			tsDir = rootCmd.Get("ts_dir").Str()
 			tsFile = rootCmd.Get("ts_file").Str()
 			removeGenDir = rootCmd.Get("remove_gen_dir").Bool()
+			tmpExcludedTableFieldTags := rootCmd.Get("excluded_table_field_tags").InterSlice()
+
+			excludedTableFieldTags = make([]string, 0, len(tmpExcludedTableFieldTags))
+			for _, v := range tmpExcludedTableFieldTags {
+				excludedTableFieldTags = append(excludedTableFieldTags, v.(string))
+			}
 
 			// Data type fields
 			newTimestampName = rootCmd.Get("new_timestamp_name").Str()
@@ -249,6 +262,7 @@ var rootCmd = &cobra.Command{
 		newTimestampPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewTimestampPath.LongHand)
 		newBigintPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewBigintPath.LongHand)
 		newUUIDPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDPath.LongHand)
+		excludedTableFieldTagsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.ExcludedTableFieldTags.LongHand)
 
 		goDirCmd, _ := cmd.Flags().GetString(rootFlagParams.GoDir.LongHand)
 		tsDirCmd, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
@@ -304,6 +318,14 @@ var rootCmd = &cobra.Command{
 		if newUUIDPathCmd != "" {
 			newUUIDName = newUUIDPathCmd
 		}
+		if len(excludedTableFieldTagsCmd) > 0 {
+			excludedTableFieldTags = excludedTableFieldTagsCmd
+		}
+
+		excludedTableFieldTagMap = make(map[string]struct{}, len(excludedTableFieldTags))
+		for _, v := range excludedTableFieldTags {
+			excludedTableFieldTagMap[v] = struct{}{}
+		}
 
 		if goDirCmd != "" {
 			goDir = goDirCmd
@@ -340,15 +362,16 @@ var rootCmd = &cobra.Command{
 		if err = gen.GenerateGoModels(
 			db,
 			gen.GoModelParams{
-				Schema:           dbSchema,
-				Driver:           dbDriver,
-				GoDir:            goDir,
-				NewTimestampName: newTimestampName,
-				NewTimestampPath: newTimestampPath,
-				NewBigintName:    newBigintName,
-				NewBigintPath:    newBigintPath,
-				NewUUIDName:      newUUIDName,
-				NewUUIDPath:      newUUIDPath,
+				Schema:                 dbSchema,
+				Driver:                 dbDriver,
+				GoDir:                  goDir,
+				NewTimestampName:       newTimestampName,
+				NewTimestampPath:       newTimestampPath,
+				NewBigintName:          newBigintName,
+				NewBigintPath:          newBigintPath,
+				NewUUIDName:            newUUIDName,
+				NewUUIDPath:            newUUIDPath,
+				ExcludedTableFieldTags: excludedTableFieldTagMap,
 			},
 		); err != nil {
 			return errors.WithStack(err)
@@ -581,6 +604,11 @@ func init() {
 		rootFlagParams.NewUUIDPath.LongHand,
 		"",
 		"Determines the new uuid import path",
+	)
+	rootCmd.PersistentFlags().StringSlice(
+		rootFlagParams.ExcludedTableFieldTags.LongHand,
+		nil,
+		"Determines what table field tags will be excluded from being exported.  Format should be <table_name>.<field_name>",
 	)
 
 	////////////////////////////////
