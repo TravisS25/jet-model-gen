@@ -90,8 +90,8 @@ var rootFlagParams = rootFlagNames{
 	},
 
 	// Directory/file fields
-	GoDir: flagName{
-		LongHand: "go-dir",
+	BaseJetDir: flagName{
+		LongHand: "base-jet-dir",
 	},
 	TsDir: flagName{
 		LongHand: "ts-dir",
@@ -110,7 +110,7 @@ var dbDriverMap = map[gen.DBDriver]struct{}{
 	gen.SqliteDriver:   {},
 }
 
-type rootParms struct {
+type rootValidationParms struct {
 	DbDriver   gen.DBDriver
 	DbSchema   string
 	DbUser     string
@@ -139,7 +139,7 @@ type rootFlagNames struct {
 	DbSslCrt     flagName
 
 	// Directory/file fields
-	GoDir        flagName
+	BaseJetDir   flagName
 	TsDir        flagName
 	TsFile       flagName
 	RemoveGenDir flagName
@@ -162,14 +162,6 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:   "jet-model-gen",
 	Short: "Generates models for different languages based on database",
-	Long: `
-	Generates models based on the connecting database for a variety of different
-	languages using the jet golang library
-	`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	//	Run: func(cmd *cobra.Command, args []string) { },
-
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		dbDriver, _ := cmd.Flags().GetString(rootFlagParams.DbDriver.LongHand)
 		dbSchema, _ := cmd.Flags().GetString(rootFlagParams.DbSchema.LongHand)
@@ -179,11 +171,11 @@ var rootCmd = &cobra.Command{
 		dbPort, _ := cmd.Flags().GetInt(rootFlagParams.DbPort.LongHand)
 		dbName, _ := cmd.Flags().GetString(rootFlagParams.DbName.LongHand)
 
-		goDir, _ := cmd.Flags().GetString(rootFlagParams.GoDir.LongHand)
+		baseJetDir, _ := cmd.Flags().GetString(rootFlagParams.BaseJetDir.LongHand)
 		tsDir, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
 		tsFile, _ := cmd.Flags().GetString(rootFlagParams.TsFile.LongHand)
 
-		return rootCmdPreRunValidation(rootParms{
+		return rootCmdPreRunValidation(rootValidationParms{
 			DbDriver:   gen.DBDriver(dbDriver),
 			DbSchema:   dbSchema,
 			DbUser:     dbUser,
@@ -192,7 +184,7 @@ var rootCmd = &cobra.Command{
 			DbPort:     dbPort,
 			DbName:     dbName,
 
-			GoDir:  goDir,
+			GoDir:  baseJetDir,
 			TsDir:  tsDir,
 			TsFile: tsFile,
 		})
@@ -206,7 +198,7 @@ var rootCmd = &cobra.Command{
 		var newTimestampName, newTimestampPath, newBigintName, newBigintPath, newUUIDName, newUUIDPath string
 		var excludedTableFieldTagMap map[string]struct{}
 		var excludedTableFieldTags []string
-		var goDir, tsDir, tsFile string
+		var baseJetDir, tsDir, tsFile string
 
 		if err = viper.ReadInConfig(); err == nil {
 			rootCmd := objx.New(viper.GetStringMap("root_cmd"))
@@ -225,7 +217,7 @@ var rootCmd = &cobra.Command{
 			dbSslCrt = rootCmd.Get("db_ssl_cert").Str()
 
 			// Directory/file fields
-			goDir = rootCmd.Get("go_dir").Str()
+			baseJetDir = rootCmd.Get("base_jet_dir").Str()
 			tsDir = rootCmd.Get("ts_dir").Str()
 			tsFile = rootCmd.Get("ts_file").Str()
 			removeGenDir = rootCmd.Get("remove_gen_dir").Bool()
@@ -264,7 +256,7 @@ var rootCmd = &cobra.Command{
 		newUUIDPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDPath.LongHand)
 		excludedTableFieldTagsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.ExcludedTableFieldTags.LongHand)
 
-		goDirCmd, _ := cmd.Flags().GetString(rootFlagParams.GoDir.LongHand)
+		baseJetDirCmd, _ := cmd.Flags().GetString(rootFlagParams.BaseJetDir.LongHand)
 		tsDirCmd, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
 		tsFileCmd, _ := cmd.Flags().GetString(rootFlagParams.TsFile.LongHand)
 		removeGenDirCmd, _ := cmd.Flags().GetBool(rootFlagParams.RemoveGenDir.LongHand)
@@ -327,8 +319,8 @@ var rootCmd = &cobra.Command{
 			excludedTableFieldTagMap[v] = struct{}{}
 		}
 
-		if goDirCmd != "" {
-			goDir = goDirCmd
+		if baseJetDirCmd != "" {
+			baseJetDir = baseJetDirCmd
 		}
 		if tsDirCmd != "" {
 			tsDir = tsDirCmd
@@ -364,7 +356,7 @@ var rootCmd = &cobra.Command{
 			gen.GoModelParams{
 				Schema:                 dbSchema,
 				Driver:                 dbDriver,
-				GoDir:                  goDir,
+				BaseJetDir:             baseJetDir,
 				NewTimestampName:       newTimestampName,
 				NewTimestampPath:       newTimestampPath,
 				NewBigintName:          newBigintName,
@@ -378,15 +370,15 @@ var rootCmd = &cobra.Command{
 		}
 
 		if tsDir != "" && tsFile != "" {
-			if err = gen.GenerateTsModels(filepath.Join(goDir, dbSchema, "model"), tsDir, tsFile); err != nil {
+			if err = gen.GenerateTsModels(filepath.Join(baseJetDir, dbSchema, "model"), tsDir, tsFile); err != nil {
 				return errors.WithStack(err)
 			}
 		}
 
 		homeDir, _ := homedir.Dir()
 
-		if removeGenDir && goDir != homeDir {
-			if err = os.RemoveAll(goDir); err != nil {
+		if removeGenDir && baseJetDir != homeDir {
+			if err = os.RemoveAll(baseJetDir); err != nil {
 				return errors.WithStack(err)
 			}
 		}
@@ -395,7 +387,7 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func rootCmdPreRunValidation(params rootParms) error {
+func rootCmdPreRunValidation(params rootValidationParms) error {
 	var err error
 	var ok bool
 	var rootCmdMap map[string]interface{}
@@ -419,7 +411,7 @@ func rootCmdPreRunValidation(params rootParms) error {
 	dbPort := rootObjx.Get("db_port").Int()
 	dbName := rootObjx.Get("db_name").Str()
 
-	goDir := rootObjx.Get("go_dir").Str()
+	baseJetDir := rootObjx.Get("base_jet_dir").Str()
 	tsDir := rootObjx.Get("ts_dir").Str()
 	tsFile := rootObjx.Get("ts_file").Str()
 
@@ -480,9 +472,9 @@ func rootCmdPreRunValidation(params rootParms) error {
 		)
 	}
 
-	if goDir == "" && tsDir == "" && tsFile == "" {
+	if baseJetDir == "" && tsDir == "" && tsFile == "" {
 		return errors.WithStack(
-			fmt.Errorf(gen.PACKAGE_NAME + ": must pass --go-dir or --ts-dir and --ts-file"),
+			fmt.Errorf(gen.PACKAGE_NAME + ": must pass --base-jet-dir or --ts-dir and --ts-file"),
 		)
 	}
 
@@ -616,9 +608,9 @@ func init() {
 	////////////////////////////////
 
 	rootCmd.PersistentFlags().String(
-		rootFlagParams.GoDir.LongHand,
+		rootFlagParams.BaseJetDir.LongHand,
 		"",
-		"Determines what directory to store generated go models",
+		"Determines the base directory of where jet models and table will be generated",
 	)
 	rootCmd.PersistentFlags().String(
 		rootFlagParams.TsDir.LongHand,

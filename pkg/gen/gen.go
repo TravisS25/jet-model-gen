@@ -8,6 +8,7 @@ import (
 	"go/format"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,7 +40,7 @@ type foreignKey struct {
 
 type GoModelParams struct {
 	Driver                 DBDriver
-	GoDir                  string
+	BaseJetDir             string
 	Schema                 string
 	NewTimestampName       string
 	NewBigintName          string
@@ -171,16 +172,16 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 				)
 		})
 
-	fmt.Printf("Generating go files....\n")
+	log.Printf("Generating go files...")
 
-	if err = template.ProcessSchema(params.GoDir, schemaMetadata, tmpl); err != nil {
+	if err = template.ProcessSchema(params.BaseJetDir, schemaMetadata, tmpl); err != nil {
 		return fmt.Errorf("error processing schema: %s", err)
 	}
 
-	fmt.Printf("Updating go files....\n")
+	log.Printf("Updating go files...")
 
-	goFileDir := filepath.Join(params.GoDir, params.Schema, "model")
-	if err = filepath.WalkDir(goFileDir, func(path string, entry fs.DirEntry, err error) error {
+	goModelDir := filepath.Join(params.BaseJetDir, params.Schema, "model")
+	if err = filepath.WalkDir(goModelDir, func(path string, entry fs.DirEntry, err error) error {
 		if !entry.IsDir() {
 			if !strings.HasSuffix(entry.Name(), ".go") {
 				return nil
@@ -281,7 +282,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	return nil
 }
 
-func GenerateTsModels(modelDir, tsDir, tsFile string) error {
+func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 	strConv := []string{
 		"Int64",
 		"int64",
@@ -314,9 +315,9 @@ func GenerateTsModels(modelDir, tsDir, tsFile string) error {
 
 	defer newFile.Close()
 
-	fmt.Printf("Generating ts files....\n")
+	log.Printf("Generating ts files...")
 
-	return filepath.Walk(modelDir, func(path string, info fs.FileInfo, err error) error {
+	return filepath.Walk(goModelDir, func(path string, info fs.FileInfo, err error) error {
 		if !info.IsDir() {
 			if !strings.HasSuffix(info.Name(), ".go") {
 				return nil
