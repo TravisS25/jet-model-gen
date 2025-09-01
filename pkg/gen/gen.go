@@ -28,6 +28,13 @@ import (
 	"github.com/kenshaw/snaker"
 )
 
+type TagFormat string
+
+const (
+	CamelCaseTagFormat TagFormat = "camelCase"
+	SnakeCaseTagFormat TagFormat = "snakeCase"
+)
+
 const (
 	PACKAGE_NAME         = "jet-model-gen"
 	JET_PASSWORD_ENV_VAR = "JET_MODEL_GEN_DB_PASSWORD"
@@ -49,6 +56,7 @@ type GoModelParams struct {
 	NewBigintPath          string
 	NewUUIDPath            string
 	ExcludedTableFieldTags map[string]struct{}
+	Tags                   map[string]TagFormat
 }
 
 func GenerateGoModels(db *sql.DB, params GoModelParams) error {
@@ -153,16 +161,24 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 									}
 								}
 
-								tags := []string{
-									`db:"` + col.Name + `"`,
-									`mapstructure:"` + col.Name + `"`,
-									`alias:"` + col.Name + `"`,
-								}
+								tags := make([]string, 0, len(params.Tags))
 
-								if excludeJsonTag {
-									tags = append(tags, `json:"-"`)
-								} else {
-									tags = append(tags, `json:"`+snaker.ForceLowerCamelIdentifier(col.Name)+`"`)
+								for tag, format := range params.Tags {
+									var colName string
+
+									switch format {
+									case SnakeCaseTagFormat:
+										colName = snaker.CamelToSnake(col.Name)
+									default:
+										colName = snaker.ForceLowerCamelIdentifier(col.Name)
+									}
+
+									if tag == "json" && excludeJsonTag {
+										tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag, "-"))
+										continue
+									}
+
+									tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag, colName))
 								}
 
 								field = field.UseTags(tags...)
