@@ -30,6 +30,11 @@ import (
 
 type TagFormat string
 
+type Tag struct {
+	Name   string
+	Format TagFormat
+}
+
 const (
 	CamelCaseTagFormat TagFormat = "camelCase"
 	SnakeCaseTagFormat TagFormat = "snakeCase"
@@ -49,14 +54,16 @@ type GoModelParams struct {
 	Driver                 DBDriver
 	BaseJetDir             string
 	Schema                 string
+	NewNumericName         string
 	NewTimestampName       string
 	NewBigintName          string
 	NewUUIDName            string
 	NewTimestampPath       string
 	NewBigintPath          string
 	NewUUIDPath            string
+	NewNumericPath         string
 	ExcludedTableFieldTags map[string]struct{}
-	Tags                   map[string]TagFormat
+	Tags                   []Tag
 }
 
 func GenerateGoModels(db *sql.DB, params GoModelParams) error {
@@ -130,6 +137,15 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 							UseField(func(col metadata.Column) template.TableModelField {
 								field := template.DefaultTableModelField(col)
 
+								//fmt.Printf("colname - %s datatype - %s\n", col.Name, col.DataType.Name)
+
+								if params.NewNumericName != "" && strings.Contains(col.DataType.Name, "numeric") {
+									field = field.UseType(template.Type{
+										Name:       getFieldName(col, params.NewNumericName),
+										ImportPath: params.NewNumericPath,
+									})
+								}
+
 								if params.NewBigintName != "" && strings.Contains(col.DataType.Name, "bigint") {
 									field = field.UseType(template.Type{
 										Name:       getFieldName(col, params.NewBigintName),
@@ -163,22 +179,22 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 								tags := make([]string, 0, len(params.Tags))
 
-								for tag, format := range params.Tags {
+								for _, tag := range params.Tags {
 									var colName string
 
-									switch format {
+									switch tag.Format {
 									case SnakeCaseTagFormat:
 										colName = snaker.CamelToSnake(col.Name)
 									default:
 										colName = snaker.ForceLowerCamelIdentifier(col.Name)
 									}
 
-									if tag == "json" && excludeJsonTag {
-										tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag, "-"))
+									if tag.Name == "json" && excludeJsonTag {
+										tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag.Name, "-"))
 										continue
 									}
 
-									tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag, colName))
+									tags = append(tags, fmt.Sprintf(`%s:"%s"`, tag.Name, colName))
 								}
 
 								field = field.UseTags(tags...)
