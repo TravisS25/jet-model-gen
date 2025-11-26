@@ -24,14 +24,14 @@ type RootParams struct {
 	TsFile       string `mapstructure:"ts_file"`
 	RemoveGenDir bool   `mapstructure:"remove_gen_dir"`
 
-	// Data type fields
-	NewTimestampName string `mapstructure:"new_timestamp_name"`
-	NewBigintName    string `mapstructure:"new_bigint_name"`
-	NewUUIDName      string `mapstructure:"new_uuid_name"`
+	// // Data type fields
+	// NewTimestampName string `mapstructure:"new_timestamp_name"`
+	// NewBigintName    string `mapstructure:"new_bigint_name"`
+	// NewUUIDName      string `mapstructure:"new_uuid_name"`
 
-	NewTimestampPath string `mapstructure:"new_timestamp_path"`
-	NewBigintPath    string `mapstructure:"new_bigint_path"`
-	NewUUIDPath      string `mapstructure:"new_uuid_path"`
+	// NewTimestampPath string `mapstructure:"new_timestamp_path"`
+	// NewBigintPath    string `mapstructure:"new_bigint_path"`
+	// NewUUIDPath      string `mapstructure:"new_uuid_path"`
 
 	ExcludedTableFieldTags []string `mapstructure:"excluded_table_field_tags"`
 }

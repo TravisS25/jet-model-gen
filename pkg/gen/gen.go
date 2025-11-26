@@ -31,8 +31,23 @@ import (
 type TagFormat string
 
 type Tag struct {
-	Name   string
-	Format TagFormat
+	Name   string    `mapstructure:"name"`
+	Format TagFormat `mapstructure:"format"`
+}
+
+type TsConvert struct {
+	OldType string `mapstructure:"old_type"`
+	NewType string `mapstructure:"new_type"`
+}
+
+type GoImport struct {
+	Path    string `mapstructure:"path"`
+	NewType string `mapstructure:"new_type"`
+}
+
+type GoConvert struct {
+	OldType string   `mapstructure:"old_type"`
+	Import  GoImport `mapstructure:"import"`
 }
 
 const (
@@ -54,16 +69,13 @@ type GoModelParams struct {
 	Driver                 DBDriver
 	BaseJetDir             string
 	Schema                 string
-	NewNumericName         string
-	NewTimestampName       string
-	NewBigintName          string
-	NewUUIDName            string
-	NewTimestampPath       string
-	NewBigintPath          string
-	NewUUIDPath            string
-	NewNumericPath         string
 	ExcludedTableFieldTags map[string]struct{}
 	Tags                   []Tag
+	TypeConverts           []GoConvert
+}
+
+type TsModelParams struct {
+	TypeConverts []TsConvert
 }
 
 func GenerateGoModels(db *sql.DB, params GoModelParams) error {
@@ -80,9 +92,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 	schemaMetadata, err := metadata.GetSchema(db, querySet, params.Schema)
 	if err != nil {
-		return errors.WithStack(
-			fmt.Errorf(PACKAGE_NAME+": error trying to get schema data: %s", err),
-		)
+		return errors.Wrapf(err, "%s: error trying to get schema data", PACKAGE_NAME)
 	}
 
 	//newTableMetaList := make([]metadata.Table, 0, len(schemaMetadata.TablesMetaData))
@@ -91,9 +101,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	for _, table := range schemaMetadata.TablesMetaData {
 		rows, err := db.Query(getForeignKeyQuery(params.Driver, params.Schema, table.Name))
 		if err != nil {
-			return errors.WithStack(
-				fmt.Errorf(PACKAGE_NAME+": error querying foreign tables: %s", err),
-			)
+			return errors.Wrapf(err, "%s: error querying foreign tables", PACKAGE_NAME)
 		}
 
 		fks := make([]foreignKey, 0, 10)
@@ -102,9 +110,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 			var columnName, foreignTableName string
 
 			if err = rows.Scan(&columnName, &foreignTableName); err != nil {
-				return errors.WithStack(
-					fmt.Errorf(PACKAGE_NAME+": error trying to scan foreign row: %s", err),
-				)
+				return errors.Wrapf(err, "%s: error trying to scan foreign row", PACKAGE_NAME)
 			}
 
 			fks = append(fks, foreignKey{
@@ -137,34 +143,13 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 							UseField(func(col metadata.Column) template.TableModelField {
 								field := template.DefaultTableModelField(col)
 
-								//fmt.Printf("colname - %s datatype - %s\n", col.Name, col.DataType.Name)
-
-								if params.NewNumericName != "" && strings.Contains(col.DataType.Name, "numeric") {
-									field = field.UseType(template.Type{
-										Name:       getFieldName(col, params.NewNumericName),
-										ImportPath: params.NewNumericPath,
-									})
-								}
-
-								if params.NewBigintName != "" && strings.Contains(col.DataType.Name, "bigint") {
-									field = field.UseType(template.Type{
-										Name:       getFieldName(col, params.NewBigintName),
-										ImportPath: params.NewBigintPath,
-									})
-								}
-
-								if params.NewTimestampName != "" && strings.Contains(col.DataType.Name, "timestamp") {
-									field = field.UseType(template.Type{
-										Name:       getFieldName(col, params.NewTimestampName),
-										ImportPath: params.NewTimestampPath,
-									})
-								}
-
-								if params.NewUUIDName != "" && strings.Contains(col.DataType.Name, "uuid") {
-									field = field.UseType(template.Type{
-										Name:       getFieldName(col, params.NewUUIDName),
-										ImportPath: params.NewUUIDPath,
-									})
+								for _, convert := range params.TypeConverts {
+									if convert.OldType == col.DataType.Name {
+										field = field.UseType(template.Type{
+											Name:       getFieldName(col, convert.Import.NewType),
+											ImportPath: convert.Import.Path,
+										})
+									}
 								}
 
 								excludeJsonTag := false
@@ -207,7 +192,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	log.Printf("Generating go files...")
 
 	if err = template.ProcessSchema(params.BaseJetDir, schemaMetadata, tmpl); err != nil {
-		return fmt.Errorf("error processing schema: %s", err)
+		return errors.Wrapf(err, "%s: error processing schema", PACKAGE_NAME)
 	}
 
 	log.Printf("Updating go files...")
@@ -221,7 +206,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 			origFile, err := os.Open(path)
 			if err != nil {
-				return errors.WithStack(err)
+				return errors.Wrapf(err, "%s: error opening file %q", PACKAGE_NAME, path)
 			}
 
 			// Create a scanner to read lines
@@ -257,19 +242,19 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 								) + "` \n",
 						)
 						if err != nil {
-							return fmt.Errorf("error trying to write to buffer: %s", err)
+							return errors.Wrapf(err, "%s: error trying to write to buffer", PACKAGE_NAME)
 						}
 					}
 				}
 
 				if _, err = bufWriter.WriteString(line + "\n"); err != nil {
-					return fmt.Errorf("error trying to write to buffer: %s", err)
+					return errors.Wrapf(err, "%s: error trying to write to buffer", PACKAGE_NAME)
 				}
 			}
 
 			// Check for scanning errors
 			if err := scanner.Err(); err != nil {
-				return fmt.Errorf("error scanning file: %s", err)
+				return errors.Wrapf(err, "%s: error scanning file", PACKAGE_NAME)
 			}
 
 			// Close the original file
@@ -277,33 +262,32 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 			formattedFile, err := format.Source(bufWriter.Bytes())
 			if err != nil {
-				return fmt.Errorf("error trying to format file: %s", err)
+				return errors.Wrapf(err, "%s: error trying to format file", PACKAGE_NAME)
 			}
 
 			tempFilePath := "jet_model_gen_test.go"
 			tempFile, err := os.Create(tempFilePath)
 			if err != nil {
-				return fmt.Errorf("error creating temporary file: %s", err)
+				return errors.Wrapf(err, "%s: error creating temporary file", PACKAGE_NAME)
 			}
 
 			defer tempFile.Close()
 
 			if _, err = tempFile.Write(formattedFile); err != nil {
-				return fmt.Errorf("error writing to file: %s", err)
+				return errors.Wrapf(err, "%s: error writing to file", PACKAGE_NAME)
 			}
 
 			// Remove the original file
 			err = os.Remove(path)
 			if err != nil {
-				return fmt.Errorf("error removing original file: %s", err)
+				return errors.Wrapf(err, "%s: error removing original file", PACKAGE_NAME)
 			}
 
 			// Rename the temporary file to the original file name
 			err = os.Rename(tempFilePath, path)
 			if err != nil {
-				return fmt.Errorf("error renaming temporary file: %s", err)
+				return errors.Wrapf(err, "%s: error renaming temporary file", PACKAGE_NAME)
 			}
-
 		}
 
 		return nil
@@ -314,13 +298,11 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	return nil
 }
 
-func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
+func GenerateTsModels(goModelDir, tsFile string, params TsModelParams) error {
 	strConv := []string{
-		"Int64",
 		"int64",
 		"float64",
 		"string",
-		"uuid",
 		"time",
 	}
 
@@ -336,13 +318,25 @@ func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 
 	var err error
 
-	if err = os.MkdirAll(tsDir, os.ModePerm); err != nil {
-		return errors.WithStack(err)
+	if err = os.MkdirAll(filepath.Dir(tsFile), os.ModePerm); err != nil {
+		return errors.Wrapf(
+			err,
+			"%s: error creating directory %q",
+			PACKAGE_NAME,
+			filepath.Dir(tsFile),
+		)
 	}
 
-	newFile, err := os.Create(filepath.Join(tsDir, tsFile))
+	newFile, err := os.Create(
+		filepath.Join(filepath.Dir(tsFile), filepath.Base(tsFile)),
+	)
 	if err != nil {
-		return errors.WithStack(err)
+		return errors.Wrapf(
+			err,
+			"%s: error creating ts file %q",
+			PACKAGE_NAME,
+			tsFile,
+		)
 	}
 
 	defer newFile.Close()
@@ -357,7 +351,7 @@ func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 
 			openFile, err := os.Open(path)
 			if err != nil {
-				return errors.WithStack(err)
+				return errors.Wrapf(err, "%s: error trying to open file %q", PACKAGE_NAME, path)
 			}
 
 			defer openFile.Close()
@@ -375,7 +369,7 @@ func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 						break
 					}
 
-					return errors.WithStack(err)
+					return errors.Wrapf(err, "%s: error trying to open file %q", PACKAGE_NAME, path)
 				}
 
 				ajustedLine := strings.TrimSpace(space.ReplaceAllString(l, " "))
@@ -395,7 +389,7 @@ func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 				if withinStruct {
 					lineArr := strings.Split(ajustedLine, " ")
 
-					var fieldType, fieldName string
+					var fieldType, newFieldType, fieldName string
 
 					if snaker.IsInitialism(lineArr[0]) {
 						fieldName = strings.ToLower(lineArr[0])
@@ -406,30 +400,41 @@ func GenerateTsModels(goModelDir, tsDir, tsFile string) error {
 					}
 
 					if lineArr[1][0] == '*' {
-						fieldType = lineArr[1][1:len(lineArr[1])]
+						fieldType = lineArr[1][1:]
+					} else {
+						fieldType = lineArr[1]
 					}
 
 					for _, v := range strConv {
-						if strings.Contains(lineArr[1], v) {
-							fieldType = "string"
+						if fieldType == v {
+							newFieldType = "string"
 						}
 					}
 
 					for _, v := range numConv {
-						if strings.Contains(lineArr[1], v) {
-							fieldType = "number"
+						if fieldType == v {
+							newFieldType = "number"
 						}
 					}
 
-					if lineArr[1] == "bool" || lineArr[1] == "*bool" {
-						fieldType = "boolean"
+					if fieldType == "bool" {
+						newFieldType = "boolean"
 					}
 
-					if fieldType == "" {
-						fieldType = lineArr[1]
+					if newFieldType == "" {
+						for _, kv := range params.TypeConverts {
+							if strings.Contains(lineArr[1], kv.OldType) {
+								fieldType = kv.NewType
+								break
+							}
+						}
 					}
 
-					newLine := fmt.Sprintf("\t%s?: %s\n", fieldName, fieldType)
+					if newFieldType == "" {
+						newFieldType = fieldType
+					}
+
+					newLine := fmt.Sprintf("\t%s?: %s\n", fieldName, newFieldType)
 
 					if _, err = newFileWriter.WriteString(newLine); err != nil {
 						return errors.WithStack(err)

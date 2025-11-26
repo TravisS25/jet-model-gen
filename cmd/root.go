@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/TravisS25/jet-model-gen/pkg/gen"
 	"github.com/pkg/errors"
@@ -66,41 +67,27 @@ var rootFlagParams = rootFlagNames{
 		LongHand: "db-ssl-root-crt",
 	},
 
-	// Data type fields
-	NewTimestampName: flagName{
-		LongHand: "new-timestamp-name",
-	},
-	NewBigintName: flagName{
-		LongHand: "new-bigint-name",
-	},
-	NewUUIDName: flagName{
-		LongHand: "new-uuid-name",
-	},
-	NewTimestampPath: flagName{
-		LongHand: "new-timestamp-path",
-	},
-	NewBigintPath: flagName{
-		LongHand: "new-bigint-path",
-	},
-	NewUUIDPath: flagName{
-		LongHand: "new-uuid-path",
-	},
-	ExcludedTableFieldTags: flagName{
-		LongHand: "excluded-table-field-tags",
-	},
-
 	// Directory/file fields
 	BaseJetDir: flagName{
 		LongHand: "base-jet-dir",
-	},
-	TsDir: flagName{
-		LongHand: "ts-dir",
 	},
 	TsFile: flagName{
 		LongHand: "ts-file",
 	},
 	RemoveGenDir: flagName{
 		LongHand: "remove-gen-dir",
+	},
+	Tags: flagName{
+		LongHand: "tag",
+	},
+	GoConverts: flagName{
+		LongHand: "go-convert",
+	},
+	TsConverts: flagName{
+		LongHand: "ts-convert",
+	},
+	ExcludedTableFieldTags: flagName{
+		LongHand: "excluded-table-field-tags",
 	},
 }
 
@@ -120,7 +107,6 @@ type rootValidationParms struct {
 	DbName     string
 
 	GoDir  string
-	TsDir  string
 	TsFile string
 }
 
@@ -139,20 +125,12 @@ type rootFlagNames struct {
 	DbSslCrt     flagName
 
 	// Directory/file fields
-	BaseJetDir   flagName
-	TsDir        flagName
-	TsFile       flagName
-	RemoveGenDir flagName
-
-	// Data type fields
-	NewTimestampName flagName
-	NewBigintName    flagName
-	NewUUIDName      flagName
-
-	NewTimestampPath flagName
-	NewBigintPath    flagName
-	NewUUIDPath      flagName
-
+	BaseJetDir             flagName
+	TsFile                 flagName
+	RemoveGenDir           flagName
+	Tags                   flagName
+	GoConverts             flagName
+	TsConverts             flagName
 	ExcludedTableFieldTags flagName
 }
 
@@ -172,7 +150,6 @@ var rootCmd = &cobra.Command{
 		dbName, _ := cmd.Flags().GetString(rootFlagParams.DbName.LongHand)
 
 		baseJetDir, _ := cmd.Flags().GetString(rootFlagParams.BaseJetDir.LongHand)
-		tsDir, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
 		tsFile, _ := cmd.Flags().GetString(rootFlagParams.TsFile.LongHand)
 
 		return rootCmdPreRunValidation(rootValidationParms{
@@ -185,7 +162,6 @@ var rootCmd = &cobra.Command{
 			DbName:     dbName,
 
 			GoDir:  baseJetDir,
-			TsDir:  tsDir,
 			TsFile: tsFile,
 		})
 	},
@@ -194,11 +170,19 @@ var rootCmd = &cobra.Command{
 		var dbPort int
 		var removeGenDir bool
 		var dbDriver gen.DBDriver
-		var dbHost, dbUser, dbPassword, dbName, dbSchema, dbSslMode, dbSslRootCrt, dbSslKey, dbSslCrt string
-		var newTimestampName, newTimestampPath, newBigintName, newBigintPath, newUUIDName, newUUIDPath string
+		var dbHost,
+			dbUser,
+			dbPassword,
+			dbName,
+			dbSchema,
+			dbSslMode,
+			dbSslRootCrt,
+			dbSslKey,
+			dbSslCrt string
 		var excludedTableFieldTagMap map[string]struct{}
 		var excludedTableFieldTags []string
-		var baseJetDir, tsDir, tsFile string
+		var baseJetDir, tsFile string
+		var tagObjSlice, tsConvertObjSlice, goConvertObjSlice []objx.Map
 
 		if err = viper.ReadInConfig(); err == nil {
 			rootCmd := objx.New(viper.GetStringMap("root_cmd"))
@@ -218,23 +202,14 @@ var rootCmd = &cobra.Command{
 
 			// Directory/file fields
 			baseJetDir = rootCmd.Get("base_jet_dir").Str()
-			tsDir = rootCmd.Get("ts_dir").Str()
 			tsFile = rootCmd.Get("ts_file").Str()
 			removeGenDir = rootCmd.Get("remove_gen_dir").Bool()
-			tmpExcludedTableFieldTags := rootCmd.Get("excluded_table_field_tags").InterSlice()
 
-			excludedTableFieldTags = make([]string, 0, len(tmpExcludedTableFieldTags))
-			for _, v := range tmpExcludedTableFieldTags {
-				excludedTableFieldTags = append(excludedTableFieldTags, v.(string))
-			}
-
-			// Data type fields
-			newTimestampName = rootCmd.Get("new_timestamp_name").Str()
-			newTimestampPath = rootCmd.Get("new_timestamp_path").Str()
-			newBigintName = rootCmd.Get("new_bigint_name").Str()
-			newBigintPath = rootCmd.Get("new_bigint_path").Str()
-			newUUIDName = rootCmd.Get("new_uuid_name").Str()
-			newUUIDPath = rootCmd.Get("new_uuid_path").Str()
+			excludedTableFieldTags = rootCmd.Get("excluded_table_field_tags").
+				StringSlice()
+			tagObjSlice = rootCmd.Get("tag").ObjxMapSlice()
+			tsConvertObjSlice = rootCmd.Get("ts_convert").ObjxMapSlice()
+			goConvertObjSlice = rootCmd.Get("go_convert").ObjxMapSlice()
 		}
 
 		dbDriverCmd, _ := cmd.Flags().GetString(rootFlagParams.DbDriver.LongHand)
@@ -248,18 +223,15 @@ var rootCmd = &cobra.Command{
 		dbSslRootCrtCmd, _ := cmd.Flags().GetString(rootFlagParams.DbSslRootCrt.LongHand)
 		dbSslKeyCmd, _ := cmd.Flags().GetString(rootFlagParams.DbSslKey.LongHand)
 
-		newTimestampNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewTimestampName.LongHand)
-		newBigintNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewBigintName.LongHand)
-		newUUIDNameCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDName.LongHand)
-		newTimestampPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewTimestampPath.LongHand)
-		newBigintPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewBigintPath.LongHand)
-		newUUIDPathCmd, _ := cmd.Flags().GetString(rootFlagParams.NewUUIDPath.LongHand)
-		excludedTableFieldTagsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.ExcludedTableFieldTags.LongHand)
-
 		baseJetDirCmd, _ := cmd.Flags().GetString(rootFlagParams.BaseJetDir.LongHand)
-		tsDirCmd, _ := cmd.Flags().GetString(rootFlagParams.TsDir.LongHand)
 		tsFileCmd, _ := cmd.Flags().GetString(rootFlagParams.TsFile.LongHand)
 		removeGenDirCmd, _ := cmd.Flags().GetBool(rootFlagParams.RemoveGenDir.LongHand)
+		excludedTableFieldTagsCmd, _ := cmd.Flags().GetStringSlice(
+			rootFlagParams.ExcludedTableFieldTags.LongHand,
+		)
+		tagsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.Tags.LongHand)
+		tsConvertsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.TsConverts.LongHand)
+		goConvertsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.GoConverts.LongHand)
 
 		if dbDriverCmd != "" {
 			dbDriver = gen.DBDriver(dbDriverCmd)
@@ -291,25 +263,16 @@ var rootCmd = &cobra.Command{
 		if dbSslKeyCmd != "" {
 			dbSslKey = dbSslKeyCmd
 		}
+		if baseJetDirCmd != "" {
+			baseJetDir = baseJetDirCmd
+		}
+		if tsFileCmd != "" {
+			tsFile = tsFileCmd
+		}
+		if removeGenDirCmd {
+			removeGenDir = true
+		}
 
-		if newTimestampNameCmd != "" {
-			newTimestampName = newTimestampNameCmd
-		}
-		if newTimestampPathCmd != "" {
-			newTimestampPath = newTimestampPathCmd
-		}
-		if newBigintNameCmd != "" {
-			newBigintName = newBigintNameCmd
-		}
-		if newBigintPathCmd != "" {
-			newBigintName = newBigintPathCmd
-		}
-		if newUUIDNameCmd != "" {
-			newUUIDName = newUUIDNameCmd
-		}
-		if newUUIDPathCmd != "" {
-			newUUIDName = newUUIDPathCmd
-		}
 		if len(excludedTableFieldTagsCmd) > 0 {
 			excludedTableFieldTags = excludedTableFieldTagsCmd
 		}
@@ -319,17 +282,99 @@ var rootCmd = &cobra.Command{
 			excludedTableFieldTagMap[v] = struct{}{}
 		}
 
-		if baseJetDirCmd != "" {
-			baseJetDir = baseJetDirCmd
+		var tags []gen.Tag
+
+		if len(tagsCmd) > 0 {
+			tags = make([]gen.Tag, 0, len(tagsCmd))
+
+			for _, tag := range tagsCmd {
+				tagArr := strings.Split(tag, ":")
+
+				if len(tagArr) != 2 {
+					return fmt.Errorf(
+						"--tag passed are invalid format; should be %q",
+						"<tag_name>:<'camelCase' | 'snakeCase'>",
+					)
+				}
+
+				if tagArr[1] != string(gen.CamelCaseTagFormat) &&
+					tagArr[1] != string(gen.SnakeCaseTagFormat) {
+					return fmt.Errorf(
+						"--tag[1] must be in format %q or %q",
+						"camelCase",
+						"snakeCase",
+					)
+				}
+
+				tags = append(tags, gen.Tag{
+					Name:   tagArr[0],
+					Format: gen.TagFormat(tagArr[1]),
+				})
+			}
+		} else {
+			tags = make([]gen.Tag, 0, len(tagObjSlice))
+
+			for _, tag := range tagObjSlice {
+				tags = append(tags, gen.Tag{
+					Name:   tag.Get("name").Str(),
+					Format: gen.TagFormat(tag.Get("format").Str()),
+				})
+			}
 		}
-		if tsDirCmd != "" {
-			tsDir = tsDirCmd
+
+		var tsConverts []gen.TsConvert
+
+		if len(tsConvertsCmd) > 0 {
+			tsConverts = make([]gen.TsConvert, 0, len(tsConvertsCmd))
+
+			for _, convert := range tsConvertsCmd {
+				convertArr := strings.Split(convert, ":")
+
+				if len(convertArr) != 2 {
+					return fmt.Errorf(
+						"--tags passed are invalid format; should be %q",
+						"<tag_name>:<'camelCase' | 'snakeCase'>",
+					)
+				}
+			}
+		} else {
+			tsConverts = make([]gen.TsConvert, 0, len(tsConvertObjSlice))
+
+			for _, convert := range tsConvertObjSlice {
+				tsConverts = append(tsConverts, gen.TsConvert{
+					OldType: convert.Get("old_type").Str(),
+					NewType: convert.Get("new_type").Str(),
+				})
+			}
 		}
-		if tsFileCmd != "" {
-			tsFile = tsFileCmd
-		}
-		if removeGenDirCmd {
-			removeGenDir = true
+
+		var goConverts []gen.GoConvert
+
+		if len(tsConvertsCmd) > 0 {
+			goConverts = make([]gen.GoConvert, 0, len(goConvertsCmd))
+
+			for _, convert := range tsConvertsCmd {
+				convertArr := strings.Split(convert, ":")
+
+				if len(convertArr) != 2 {
+					return fmt.Errorf(
+						"--tags passed are invalid format; should be %q",
+						"<tag_name>:<'camelCase' | 'snakeCase'>",
+					)
+				}
+			}
+		} else {
+			goConverts = make([]gen.GoConvert, 0, len(goConvertObjSlice))
+
+			for _, convert := range goConvertObjSlice {
+				goConverts = append(goConverts, gen.GoConvert{
+					OldType: convert.Get("old_type").Str(),
+					Import: gen.GoImport{
+						NewType: convert.Get("import.new_type").Str(),
+						Path:    convert.Get("import.path").Str(),
+					},
+				})
+			}
 		}
 
 		dbURL := fmt.Sprintf(
@@ -357,20 +402,19 @@ var rootCmd = &cobra.Command{
 				Schema:                 dbSchema,
 				Driver:                 dbDriver,
 				BaseJetDir:             baseJetDir,
-				NewTimestampName:       newTimestampName,
-				NewTimestampPath:       newTimestampPath,
-				NewBigintName:          newBigintName,
-				NewBigintPath:          newBigintPath,
-				NewUUIDName:            newUUIDName,
-				NewUUIDPath:            newUUIDPath,
 				ExcludedTableFieldTags: excludedTableFieldTagMap,
+				Tags:                   tags,
 			},
 		); err != nil {
 			return errors.WithStack(err)
 		}
 
-		if tsDir != "" && tsFile != "" {
-			if err = gen.GenerateTsModels(filepath.Join(baseJetDir, dbSchema, "model"), tsDir, tsFile); err != nil {
+		if tsFile != "" {
+			if err = gen.GenerateTsModels(
+				filepath.Join(baseJetDir, dbSchema, "model"),
+				tsFile,
+				gen.TsModelParams{},
+			); err != nil {
 				return errors.WithStack(err)
 			}
 		}
@@ -563,40 +607,6 @@ func init() {
 		"Root cert if using ssl",
 	)
 
-	////////////////////////////////
-	// DATA TYPE FLAGS
-	////////////////////////////////
-
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewTimestampName.LongHand,
-		"",
-		"Determines what timestamp type to convert to",
-	)
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewTimestampPath.LongHand,
-		"",
-		"Determines the new timestamp import path",
-	)
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewBigintName.LongHand,
-		"",
-		"Determines what bigint type to convert to",
-	)
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewBigintPath.LongHand,
-		"",
-		"Determines the new bigint import path",
-	)
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewUUIDName.LongHand,
-		"",
-		"Determines what uuid type to convert to",
-	)
-	rootCmd.PersistentFlags().String(
-		rootFlagParams.NewUUIDPath.LongHand,
-		"",
-		"Determines the new uuid import path",
-	)
 	rootCmd.PersistentFlags().StringSlice(
 		rootFlagParams.ExcludedTableFieldTags.LongHand,
 		nil,
@@ -613,14 +623,9 @@ func init() {
 		"Determines the base directory of where jet models and table will be generated",
 	)
 	rootCmd.PersistentFlags().String(
-		rootFlagParams.TsDir.LongHand,
-		"",
-		"Determines what directory to store generated ts models",
-	)
-	rootCmd.PersistentFlags().String(
 		rootFlagParams.TsFile.LongHand,
 		"",
-		"Determines what file to store generated ts models",
+		"Determines what file to store generated ts models.  Should be absolute path",
 	)
 	rootCmd.PersistentFlags().Bool(
 		rootFlagParams.RemoveGenDir.LongHand,
