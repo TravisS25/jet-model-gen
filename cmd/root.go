@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/TravisS25/jet-model-gen/pkg/gen"
@@ -297,8 +298,10 @@ var rootCmd = &cobra.Command{
 					)
 				}
 
-				if tagArr[1] != string(gen.CamelCaseTagFormat) &&
-					tagArr[1] != string(gen.SnakeCaseTagFormat) {
+				if !slices.Contains(
+					[]gen.TagFormat{gen.CamelCaseTagFormat, gen.SnakeCaseTagFormat},
+					gen.TagFormat(tagArr[1]),
+				) {
 					return fmt.Errorf(
 						"--tag[1] must be in format %q or %q",
 						"camelCase",

@@ -53,6 +53,7 @@ type GoConvert struct {
 const (
 	CamelCaseTagFormat TagFormat = "camelCase"
 	SnakeCaseTagFormat TagFormat = "snakeCase"
+	CustomTagFormat    TagFormat = "customCase"
 )
 
 const (
@@ -60,18 +61,19 @@ const (
 	JET_PASSWORD_ENV_VAR = "JET_MODEL_GEN_DB_PASSWORD"
 )
 
-type foreignKey struct {
+type ForeignKey struct {
 	ColumnName       string
 	ForeignTableName string
 }
 
 type GoModelParams struct {
-	Driver                 DBDriver
-	BaseJetDir             string
-	Schema                 string
-	ExcludedTableFieldTags map[string]struct{}
-	Tags                   []Tag
-	TypeConverts           []GoConvert
+	Driver                     DBDriver
+	BaseJetDir                 string
+	Schema                     string
+	ExcludedTableFieldTags     map[string]struct{}
+	Tags                       []Tag
+	TypeConverts               []GoConvert
+	ForeignTableNameExceptions map[string]ForeignKey
 }
 
 type TsModelParams struct {
@@ -92,28 +94,27 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 	schemaMetadata, err := metadata.GetSchema(db, querySet, params.Schema)
 	if err != nil {
-		return errors.Wrapf(err, "%s: error trying to get schema data", PACKAGE_NAME)
+		return fmt.Errorf("%s: error trying to get schema data: %w", PACKAGE_NAME, err)
 	}
 
-	//newTableMetaList := make([]metadata.Table, 0, len(schemaMetadata.TablesMetaData))
-	tableMap := make(map[string][]foreignKey, len(schemaMetadata.TablesMetaData))
+	tableMap := make(map[string][]ForeignKey, len(schemaMetadata.TablesMetaData))
 
 	for _, table := range schemaMetadata.TablesMetaData {
 		rows, err := db.Query(getForeignKeyQuery(params.Driver, params.Schema, table.Name))
 		if err != nil {
-			return errors.Wrapf(err, "%s: error querying foreign tables", PACKAGE_NAME)
+			return fmt.Errorf("%s: error querying foreign tables: %w", PACKAGE_NAME, err)
 		}
 
-		fks := make([]foreignKey, 0, 10)
+		fks := make([]ForeignKey, 0, 10)
 
 		for rows.Next() {
 			var columnName, foreignTableName string
 
 			if err = rows.Scan(&columnName, &foreignTableName); err != nil {
-				return errors.Wrapf(err, "%s: error trying to scan foreign row", PACKAGE_NAME)
+				return fmt.Errorf("%s: error trying to scan foreign row: %w", PACKAGE_NAME, err)
 			}
 
-			fks = append(fks, foreignKey{
+			fks = append(fks, ForeignKey{
 				ColumnName:       columnName[:len(columnName)-3],
 				ForeignTableName: foreignTableName,
 			})
@@ -170,7 +171,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 									switch tag.Format {
 									case SnakeCaseTagFormat:
 										colName = snaker.CamelToSnake(col.Name)
-									default:
+									case CamelCaseTagFormat:
 										colName = snaker.ForceLowerCamelIdentifier(col.Name)
 									}
 
@@ -192,7 +193,7 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 	log.Printf("Generating go files...")
 
 	if err = template.ProcessSchema(params.BaseJetDir, schemaMetadata, tmpl); err != nil {
-		return errors.Wrapf(err, "%s: error processing schema", PACKAGE_NAME)
+		return fmt.Errorf("%s: error processing schema: %w", PACKAGE_NAME, err)
 	}
 
 	log.Printf("Updating go files...")
@@ -206,8 +207,9 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 
 			origFile, err := os.Open(path)
 			if err != nil {
-				return errors.Wrapf(err, "%s: error opening file %q", PACKAGE_NAME, path)
+				return fmt.Errorf("%s: error opening file %q: %w", PACKAGE_NAME, path, err)
 			}
+			defer origFile.Close()
 
 			// Create a scanner to read lines
 			scanner := bufio.NewScanner(origFile)
@@ -229,9 +231,21 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 					fks := tableMap[tableName]
 
 					for _, fk := range fks {
+						var cn, ftb string
+
+						//fmt.Printf(fmt.Sprintf("%s.%s.%s", tableName, fk.ColumnName, fk.ForeignTableName) + "\n")
+
+						if val, ok := params.ForeignTableNameExceptions[fmt.Sprintf("%s.%s", tableName, fk.ColumnName)]; ok {
+							cn = val.ColumnName
+							ftb = val.ForeignTableName
+						} else {
+							cn = snaker.SnakeToCamelIdentifier(fk.ColumnName)
+							ftb = snaker.SnakeToCamelIdentifier(fk.ForeignTableName)
+						}
+
 						_, err = bufWriter.WriteString(
-							snaker.SnakeToCamelIdentifier(fk.ColumnName) + " *" +
-								snaker.SnakeToCamelIdentifier(fk.ForeignTableName) + "`" +
+							cn + " *" +
+								ftb + "`" +
 								fmt.Sprintf(
 									`json:"%s" db:"%s" mapstructure:"%s" alias:"%s:%s"`,
 									snaker.ForceLowerCamelIdentifier(fk.ColumnName),
@@ -242,51 +256,47 @@ func GenerateGoModels(db *sql.DB, params GoModelParams) error {
 								) + "` \n",
 						)
 						if err != nil {
-							return errors.Wrapf(err, "%s: error trying to write to buffer", PACKAGE_NAME)
+							return fmt.Errorf("%s: error trying to write to buffer: %w", PACKAGE_NAME, err)
 						}
 					}
 				}
 
 				if _, err = bufWriter.WriteString(line + "\n"); err != nil {
-					return errors.Wrapf(err, "%s: error trying to write to buffer", PACKAGE_NAME)
+					return fmt.Errorf("%s: error trying to write to buffer: %w", PACKAGE_NAME, err)
 				}
 			}
 
 			// Check for scanning errors
 			if err := scanner.Err(); err != nil {
-				return errors.Wrapf(err, "%s: error scanning file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error scanning file: %w", PACKAGE_NAME, err)
 			}
-
-			// Close the original file
-			origFile.Close()
 
 			formattedFile, err := format.Source(bufWriter.Bytes())
 			if err != nil {
-				return errors.Wrapf(err, "%s: error trying to format file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error trying to format file: %w", PACKAGE_NAME, err)
 			}
 
 			tempFilePath := "jet_model_gen_test.go"
 			tempFile, err := os.Create(tempFilePath)
 			if err != nil {
-				return errors.Wrapf(err, "%s: error creating temporary file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error creating temporary file: %w", PACKAGE_NAME, err)
 			}
-
 			defer tempFile.Close()
 
 			if _, err = tempFile.Write(formattedFile); err != nil {
-				return errors.Wrapf(err, "%s: error writing to file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error writing to file: %w", PACKAGE_NAME, err)
 			}
 
 			// Remove the original file
 			err = os.Remove(path)
 			if err != nil {
-				return errors.Wrapf(err, "%s: error removing original file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error removing original file: %w", PACKAGE_NAME, err)
 			}
 
 			// Rename the temporary file to the original file name
 			err = os.Rename(tempFilePath, path)
 			if err != nil {
-				return errors.Wrapf(err, "%s: error renaming temporary file", PACKAGE_NAME)
+				return fmt.Errorf("%s: error renaming temporary file: %w", PACKAGE_NAME, err)
 			}
 		}
 
@@ -319,24 +329,14 @@ func GenerateTsModels(goModelDir, tsFile string, params TsModelParams) error {
 	var err error
 
 	if err = os.MkdirAll(filepath.Dir(tsFile), os.ModePerm); err != nil {
-		return errors.Wrapf(
-			err,
-			"%s: error creating directory %q",
-			PACKAGE_NAME,
-			filepath.Dir(tsFile),
-		)
+		return fmt.Errorf("%s: error creating directory %q: %w", PACKAGE_NAME, filepath.Dir(tsFile), err)
 	}
 
 	newFile, err := os.Create(
 		filepath.Join(filepath.Dir(tsFile), filepath.Base(tsFile)),
 	)
 	if err != nil {
-		return errors.Wrapf(
-			err,
-			"%s: error creating ts file %q",
-			PACKAGE_NAME,
-			tsFile,
-		)
+		return fmt.Errorf("%s: error creating ts file %q: %w", PACKAGE_NAME, tsFile, err)
 	}
 
 	defer newFile.Close()
@@ -351,7 +351,7 @@ func GenerateTsModels(goModelDir, tsFile string, params TsModelParams) error {
 
 			openFile, err := os.Open(path)
 			if err != nil {
-				return errors.Wrapf(err, "%s: error trying to open file %q", PACKAGE_NAME, path)
+				return fmt.Errorf("%s: error trying to open file %q: %w", PACKAGE_NAME, path, err)
 			}
 
 			defer openFile.Close()
@@ -369,7 +369,7 @@ func GenerateTsModels(goModelDir, tsFile string, params TsModelParams) error {
 						break
 					}
 
-					return errors.Wrapf(err, "%s: error trying to open file %q", PACKAGE_NAME, path)
+					return fmt.Errorf("%s: error trying to open file %q: %w", PACKAGE_NAME, path, err)
 				}
 
 				ajustedLine := strings.TrimSpace(space.ReplaceAllString(l, " "))
