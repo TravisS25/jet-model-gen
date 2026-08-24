@@ -90,6 +90,9 @@ var rootFlagParams = rootFlagNames{
 	ExcludedTableFieldTags: flagName{
 		LongHand: "excluded-table-field-tags",
 	},
+	ForeignTableNameException: flagName{
+		LongHand: "foreign-table-name-exception",
+	},
 }
 
 var dbDriverMap = map[gen.DBDriver]struct{}{
@@ -126,13 +129,14 @@ type rootFlagNames struct {
 	DbSslCrt     flagName
 
 	// Directory/file fields
-	BaseJetDir             flagName
-	TsFile                 flagName
-	RemoveGenDir           flagName
-	Tags                   flagName
-	GoConverts             flagName
-	TsConverts             flagName
-	ExcludedTableFieldTags flagName
+	BaseJetDir                flagName
+	TsFile                    flagName
+	RemoveGenDir              flagName
+	Tags                      flagName
+	GoConverts                flagName
+	TsConverts                flagName
+	ExcludedTableFieldTags    flagName
+	ForeignTableNameException flagName
 }
 
 var cfgFile string
@@ -183,7 +187,8 @@ var rootCmd = &cobra.Command{
 		var excludedTableFieldTagMap map[string]struct{}
 		var excludedTableFieldTags []string
 		var baseJetDir, tsFile string
-		var tagObjSlice, tsConvertObjSlice, goConvertObjSlice []objx.Map
+		var tagObjSlice, tsConvertObjSlice, goConvertObjSlice, foreignTableNameExceptionObjSlice []objx.Map
+		var foreignTableNameExceptionMap map[string]gen.ForeignKey
 
 		if err = viper.ReadInConfig(); err == nil {
 			rootCmd := objx.New(viper.GetStringMap("root_cmd"))
@@ -211,6 +216,7 @@ var rootCmd = &cobra.Command{
 			tagObjSlice = rootCmd.Get("tag").ObjxMapSlice()
 			tsConvertObjSlice = rootCmd.Get("ts_convert").ObjxMapSlice()
 			goConvertObjSlice = rootCmd.Get("go_convert").ObjxMapSlice()
+			foreignTableNameExceptionObjSlice = rootCmd.Get("foreign_table_name_exception").ObjxMapSlice()
 		}
 
 		dbDriverCmd, _ := cmd.Flags().GetString(rootFlagParams.DbDriver.LongHand)
@@ -233,6 +239,9 @@ var rootCmd = &cobra.Command{
 		tagsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.Tags.LongHand)
 		tsConvertsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.TsConverts.LongHand)
 		goConvertsCmd, _ := cmd.Flags().GetStringSlice(rootFlagParams.GoConverts.LongHand)
+		foreignTableNameExceptionCmd, _ := cmd.Flags().GetStringSlice(
+			rootFlagParams.ForeignTableNameException.LongHand,
+		)
 
 		if dbDriverCmd != "" {
 			dbDriver = gen.DBDriver(dbDriverCmd)
@@ -276,6 +285,10 @@ var rootCmd = &cobra.Command{
 
 		if len(excludedTableFieldTagsCmd) > 0 {
 			excludedTableFieldTags = excludedTableFieldTagsCmd
+		}
+
+		if len(foreignTableNameExceptionCmd) > 0 {
+			foreignTableNameExceptionObjSlice = nil
 		}
 
 		excludedTableFieldTagMap = make(map[string]struct{}, len(excludedTableFieldTags))
@@ -380,6 +393,33 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		foreignTableNameExceptionMap = make(map[string]gen.ForeignKey, len(foreignTableNameExceptionObjSlice))
+
+		if len(foreignTableNameExceptionCmd) > 0 {
+			for _, v := range foreignTableNameExceptionCmd {
+				parts := strings.Split(v, ":")
+
+				if len(parts) != 3 {
+					return fmt.Errorf(
+						"--foreign-table-name-exception passed are invalid format; should be %q",
+						"<table>.<column>:<newColumnName>:<newForeignTableName>",
+					)
+				}
+
+				foreignTableNameExceptionMap[parts[0]] = gen.ForeignKey{
+					ColumnName:       parts[1],
+					ForeignTableName: parts[2],
+				}
+			}
+		} else {
+			for _, v := range foreignTableNameExceptionObjSlice {
+				foreignTableNameExceptionMap[v.Get("table").Str()+"."+v.Get("column").Str()] = gen.ForeignKey{
+					ColumnName:       v.Get("new_column_name").Str(),
+					ForeignTableName: v.Get("new_foreign_table_name").Str(),
+				}
+			}
+		}
+
 		dbURL := fmt.Sprintf(
 			"%s://%s:%s@%s:%d/%s?sslmode=%s&sslrootcert=%s&sslkey=%s&sslcert=%s",
 			dbDriver,
@@ -402,11 +442,12 @@ var rootCmd = &cobra.Command{
 		if err = gen.GenerateGoModels(
 			db,
 			gen.GoModelParams{
-				Schema:                 dbSchema,
-				Driver:                 dbDriver,
-				BaseJetDir:             baseJetDir,
-				ExcludedTableFieldTags: excludedTableFieldTagMap,
-				Tags:                   tags,
+				Schema:                     dbSchema,
+				Driver:                     dbDriver,
+				BaseJetDir:                 baseJetDir,
+				ExcludedTableFieldTags:     excludedTableFieldTagMap,
+				Tags:                       tags,
+				ForeignTableNameExceptions: foreignTableNameExceptionMap,
 			},
 		); err != nil {
 			return errors.WithStack(err)
@@ -634,6 +675,12 @@ func init() {
 		rootFlagParams.RemoveGenDir.LongHand,
 		false,
 		"Determines whether to delete the generated go files",
+	)
+	rootCmd.PersistentFlags().StringSlice(
+		rootFlagParams.ForeignTableNameException.LongHand,
+		nil,
+		"Overrides auto-generated column name and foreign table name. "+
+			"Format: <table>.<column>:<newColumnName>:<newForeignTableName>",
 	)
 }
 
